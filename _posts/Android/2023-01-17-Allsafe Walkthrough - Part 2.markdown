@@ -171,7 +171,7 @@ Interceptor.attach(Jni, {
 ![61](/assets/images/Android/Allsafe/61.jpg){: width="350" height="450"}
 
 ## 18. Smali Patch
-![61](/assets/images/Android/Allsafe/61.jpg){: width="350" height="450"}
+![62](/assets/images/Android/Allsafe/62.jpg){: width="350" height="450"}
 
 For our final challenge, it appears that there is a mistake in the code of the firewall that made it inactive by default. The goal is to decompile the application, patch the smali code, rebuild, sign and install the new app to confirm the change.
 
