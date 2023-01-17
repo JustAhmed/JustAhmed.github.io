@@ -6,11 +6,11 @@ categories: Android
 toc: true
 ---
 ## Introduction
-[Allsafe](https://github.com/t0thkr1s/allsafe){:target="_blank"} is just another intentionally vulnerable Android application. The app is built with kotlin and contains many vulnerabilities with a nice difficulty curve. The main reason I'm writing a blog about this one is because it contains some nice Android challenges and there are no public writeups for the app till now.
+[Allsafe](https://github.com/t0thkr1s/allsafe){:target="_blank"} is just another intentionally vulnerable Android application. The app is built with kotlin and contains many vulnerabilities with a nice difficulty curve. The main reason I'm writing a blog about this one is that it contains some nice Android challenges and there are no public writeups for the app till now.
 
 ## Prerequisites
 Before starting, I'm assuming that the reader to have:
-* Basic understanding of different componentes that Android apps use.  
+* Basic understanding of different components that Android apps use.  
 * Rooted Android device/Emulator with frida installed.
 * Android studio installed.
 
@@ -18,18 +18,18 @@ Before starting, I'm assuming that the reader to have:
 Developers normally use `logging` to trace their code, and troubleshoot errors but, sometimes developers write sensitive data in the logs such as login credentials or authentication tokens.   
 To start testing for `Insecure Logging` in the app you first need to make sure that you are connected to the device via `adb` then use [logcat](https://developer.android.com/studio/command-line/logcat){:target="_blank"} to monitor the device logs. 
 
-The challenge is straightforward and we don't need to dig deep into the code. After you open the challenge and before typing anything in the textview you first need to use `logcat` to monitor the logs. Doing that is as easy as `adb logcat` but, if you do it this way you'll recieve a massive amount of logs from every service and application running on your device. Instead you want to limit the logs you see to `Allsafe` only. To do that you can use the `--pid` to monitor logs generated from the Process id of your target only
+The challenge is straightforward and we don't need to dig deep into the code. After you open the challenge and before typing anything in the textview you first need to use `logcat` to monitor the logs. Doing that is as easy as `adb logcat` but, if you do it this way you'll receive a massive amount of logs from every service and application running on your device. Instead, you want to limit the logs you see to `Allsafe` only. To do that you can use the `--pid` to monitor logs generated from the Process id of your target only
 ```bash
  adb shell --pid=$(adb shell pidof -s infosecadventures.allsafe)
  ```
- Once you've done that you can type any string in the textview and once you press `Done` you'll notic that the **supposedly** secret/sensitive data is logged by the application.
+ Once you've done that you can type any string in the textview and once you press `Done` you'll notice that the **supposedly** secret/sensitive data is logged by the application.
 
  ![1](/assets/images/Android/Allsafe/1.jpg){: width="500" height="600"}
 
  ![2](/assets/images/Android/Allsafe/2.png)
 
 ## 2. Hardcoded Credentials
-The task here is to find 2 sets of hardcoded username and password in the source code of the challenge.
+The task here is to find 2 sets of hardcoded usernames and passwords in the source code of the challenge.
 
 ![3](/assets/images/Android/Allsafe/3.jpg){: width="500" height="600"}
 
@@ -58,11 +58,11 @@ Next, from your browser try to access the `/.json` endpoint. If you get a `Permi
 ## 4. Insecure Shared Preferences
 ![10](/assets/images/Android/Allsafe/10.jpg){: width="300" height="400"}
 
-Data stored in a `SharedPreferences` objects is written to a XML file within the application's data directory. If you look at the code of this challenge you'll see that `getSharedPreferences("user", 0)` creates a shared preference object with the default creation mode `MODE_PRIVATE` and is named `user.xml`. After that, the plaintext username and password of a registered user are stored in the xml file.
+Data stored in a `SharedPreferences` object is written to an XML file within the application's data directory. If you look at the code of this challenge you'll see that `getSharedPreferences("user", 0)` creates a shared preference object with the default creation mode `MODE_PRIVATE` and is named `user.xml`. After that, the plaintext username and password of a registered user are stored in the xml file.
 
 ![11](/assets/images/Android/Allsafe/11.png)
 
-This is a very bad practice because while on non-rooted devices, other apps normally can't read that xml file, it's not the same case on a rooted android device. You can confirm the existence of a `Insecure Data Storage` vulnerability by navigating to `/data/data/infosecadventures.allsafe/shared_prefs/` and reading `user.xml`
+This is a very bad practice because while on non-rooted devices, other apps normally can't read that xml file, it's not the same case on a rooted android device. You can confirm the existence of an `Insecure Data Storage` vulnerability by navigating to `/data/data/infosecadventures.allsafe/shared_prefs/` and reading `user.xml`
 
 ![12](/assets/images/Android/Allsafe/12.png)
 
@@ -76,9 +76,9 @@ If you want to investigate it more, you'll notice that the username and password
 ![14](/assets/images/Android/Allsafe/14.png)
 
 ## 6. PIN Bypass
-In this challenge there is a hardcoded base64 encoded PIN in the app that we need to enter in in the textview to solve the challenge. The goal of this challenge is to use frida to override the check function and force it to return `true` for any PIN but since the PIN is juat a 4-digit number, why not write a frida script to burteforce the correct PIN as well! 
+In this challenge, there is a hardcoded base64 encoded PIN in the app that we need to enter in the textview to solve the challenge. The goal of this challenge is to use frida to override the check function and force it to return `true` for any PIN but since the PIN is juat a 4-digit number, why not write a frida script to burteforce the correct PIN as well?
 
-If you look at the source code, you'll see that the function responsible for validing the PIN is called `checkPin` and it returns true if the PIN we entered is the same as the hardcoded one. 
+If you look at the source code, you'll see that the function responsible for validating the PIN is called `checkPin` and it returns true if the PIN we entered is the same as the hardcoded one. 
 
 ![15](/assets/images/Android/Allsafe/15.png)
 
@@ -109,7 +109,7 @@ Finally, open the `PIN Bypass` challenge once more, enter a dummy pin to trigger
 ![16](/assets/images/Android/Allsafe/16.png)
 
 ## 7. Root Detection Bypass
-Allsafe is using RootBear to check whether or not the app is running on a rooted device. While true it performs a lot of checks but they are all boolean function that can be hooked easily and forced to return false, but the checks is implemented in a naive way becuase all the checks are being called from a function named `isRooted` so we can just hook `isRooted` and force it to return false every time using the below frida script:
+Allsafe is using RootBear to check whether or not the app is running on a rooted device. While true it performs a lot of checks but they are all boolean function that can be hooked easily and forced to return false, but the checks are implemented in a naive way because all the checks are being called from a function named `isRooted` so we can just hook `isRooted` and force it to return false every time using the below frida script:
 
 ![17](/assets/images/Android/Allsafe/17.png)
 
@@ -132,24 +132,24 @@ Finally, use frida to inject the script into the app and you'll easily bypass th
 ## 7. Secure Flag Bypass
 ![19](/assets/images/Android/Allsafe/19.jpg){: width="450" height="550"}
 
-This one, and i quote: `Window flag: treat the content of the window as secure, preventing it from appearing in screenshots or from being viewed on non-secure displays.` You'll find it commonly used in banking applications. `FLAG_SECURE` is technically not a vulnerability and I'm not interested in going into details about it but, you can use [this frida script](https://gist.github.com/su-vikas/36410f67c9e0127961ae344010c4c0ef){:target="_blank"} to bypass it.
+This one and I quote: `Window flag: treat the content of the window as secure, preventing it from appearing in screenshots or from being viewed on non-secure displays.` You'll find it commonly used in banking applications. `FLAG_SECURE` is technically not a vulnerability and I'm not interested in going into details about it but, you can use [this frida script](https://gist.github.com/su-vikas/36410f67c9e0127961ae344010c4c0ef){:target="_blank"} to bypass it.
 
 ## 8. Deep Link Exploitation 
 ![20](/assets/images/Android/Allsafe/20.jpg){: width="450" height="550"}
 
 In case you are not familiar with the term, [Deep links](https://developer.android.com/training/app-links/deep-linking){:target="_blank"} are basically hyperlinks that allow users to directly open specific views inside an android application.<br /> 
-Before we start exploiting deep links we first need to understand how the application is processing the deep link data. I'll start by examining the `AndroidManifest.xml` file and search for `android:scheme` attributes inside `<data>` tags to find the deep link defined with the below:
+Before we start exploiting deep links we first need to understand how the application is processing the deep link data. I'll start by examining the `AndroidManifest.xml` file and search for `android:scheme` attributes inside `<data>` tags to find the deep link defined with below attributes:
 * scheme: `allsafe`
 * host: `infosecadventures`
 * pathPrefix: `/congrats`
 
 ![21](/assets/images/Android/Allsafe/21.png)
 
-You'll also notice that the code responsible for handling the deeplink in `infosecadventures.allsafe.challenges.DeepLinkTask` 
+You'll also notice that the code responsible for handling the deep link in `infosecadventures.allsafe.challenges.DeepLinkTask` 
 
 ![22](/assets/images/Android/Allsafe/22.png)
 
-What's happening here is that the code first gets the data this intent is operating on, checks for a parameter named `key` and compare it's value to something from `strings.xml` that's also named key. The goal is to make this if condition evaluates to `true` so before we start exploiting we need to get the key which is very obvious inside `strings.xml`
+What's happening here is that the code first gets the data this intent is operating on, checks for a parameter named `key` and compares its value to something from `strings.xml` that's also named key. The goal is to make this `if` condition evaluates to `true` so before we start exploiting we need to get the key which is very obvious inside `strings.xml`
 
 ![23](/assets/images/Android/Allsafe/23.png)
 
@@ -163,10 +163,10 @@ adb shell am start -a "android.intent.action.VIEW" -d "allsafe://infosecadventur
 ## 9. Insecure Broadcast Receiver
 ![25](/assets/images/Android/Allsafe/25.jpg){: width="450" height="550"}
 
-`BroadcastReceiver` is an an android component that listens to system-wide broadcast events or intents. Examples of these broadcasts are like when your phone's pattery is running low then a broadcast indicating the low battery condition is sent. Some apps could be configured to listen for this broadcast and lower its powerconsumption and maybe lower the birghtness on your screen, etc... 
+`BroadcastReceiver` is an android component that listens to system-wide broadcast events or intents. Examples of these broadcasts are when your phone's battery is running low then a broadcast indicating the low battery condition is sent. Some apps could be configured to listen for this broadcast and lower its power consumption and maybe lower the brightness on your screen, etc... 
 
-Now the challenge speakes of a `Permission Re-delegation` issue that lets hackers capture notes sent via Allsafe's broadcast receiver.<br />
-`Permission Re-delegation` and i quote, Permission re-delegation occurs when an application with permissions performs a privileged task for an application without permissions.
+Now the challenge speaks of a `Permission Re-delegation` issue that lets hackers capture notes sent via Allsafe's broadcast receiver.<br />
+`Permission Re-delegation` and I quote, Permission re-delegation occurs when an application with permissions performs a privileged task for an application without permissions.
 
 To start examining the broadcast receiver in the app, I'll go to `AndroidManifest.xml` and look for `<receiver>` tags.
 
@@ -176,11 +176,11 @@ You'll notice 2 things:
 1. It defines an `intent-filter` with `infosecadventures.allsafe.action.PROCESS_NOTE` as the action
 2. The code responsible for handling a broadcast when received is in `infosecadventures.allsafe.challenges.NoteReceiver`
 
-Now whenever you want to analyze broadcast receiver you want to start from the `onReceive` function and see how it handles broadcasts it receives. 
+Now, whenever you want to analyze a broadcast receiver you want to start from the `onReceive` function and see how it handles broadcasts it receives. 
 
 ![27](/assets/images/Android/Allsafe/27.png)
 
-From the code above, you'll see that it looks for 3 string extras named `server`, `note` and `notification_message`. The first 2 extras are passed to the `HttpUrl` object to build a certain url. Finally, `notification_message` is being used as the content of a push notification after the notes is sent.<br />
+From the code above, you'll see that it looks for 3 string extras named `server`, `note` and `notification_message`. The first 2 extras are passed to the `HttpUrl` object to build a certain url. Finally, `notification_message` is being used as the content of a push notification after the note is sent.<br />
 
 Now, the `NoteReceiver` is exported, we can directly call it using adb and that gives us control over the values of `server`, `note` and `notification_message` so we can control what's being displayed in the push notification and we also control the server that notes will be sent to.
 
@@ -197,8 +197,8 @@ run that command and you'll notice the push notification with the content we spe
 ## 10. Vulnerable WebView
 ![29](/assets/images/Android/Allsafe/29.jpg){: width="300" height="450"}
 
-The challenge first requires to show an alert dialog and to access `/etc/hosts` from the filesystem. <br />
-The second part looks simple enough as it hints that file scheme is supported in this web view so I tried `file:///etc/hosts` and it worked.
+The challenge first requires showing an alert dialog and to access `/etc/hosts` from the filesystem. <br />
+The second part looks simple enough as it hints that the `file` scheme is supported in this web view so I tried `file:///etc/hosts` and it worked.
 
 ![30](/assets/images/Android/Allsafe/30.jpg){: width="400" height="550"}
 
@@ -207,7 +207,7 @@ As for the first task, it was also simple. I just tried a couple of payloads unt
 ![31](/assets/images/Android/Allsafe/31.jpg){: width="400" height="550"}
 
 ## 11. Certificate Pinning
-This is a basic SSL Pinning Bypass callenge. Its obvious from the code that it sends a http request to `https://httpbin.org/json` and uses `OkHttpClient.Builder` for the pinning process which under the hood uses the `TrustManager` method to implement the SSL Pinning control. The application also uses a `NetworkSecurityConfig.xml` file which we can modify to make it trust user-installed certificates.
+This is a basic SSL Pinning Bypass challenge. It is obvious from the code that it sends a HTTP request to `https://httpbin.org/json` and uses `OkHttpClient.Builder` for the pinning process which under the hood uses the `TrustManager` method to implement the SSL Pinning control. The application also uses a `NetworkSecurityConfig.xml` file which we can modify to make it trust user-installed certificates.
 
 ![32](/assets/images/Android/Allsafe/32.png)
 
@@ -223,7 +223,7 @@ The goal of this challenge is to use frida to hook some encryption methods and o
 
 ![34](/assets/images/Android/Allsafe/34.jpg){: width="400" height="550"}
 
-It is truly a good frida practice if you want to do it manually but to not make this blog longer than it already is, I'll just use [Intercept Android APK Crypto Operations](https://codeshare.frida.re/@fadeevab/intercept-android-apk-crypto-operations/) frida script from codeshare to monitor encryption operations. I'll spawn the app with the script, enter any text and press `ENCRYPT` and watch as the script logs all the info about the encryption process that just happened. It gives you information about the Algorithm, the Secret Key and also the plaintext.
+It is truly a good frida practice if you want to do it manually but to not make this blog longer than it already is, I'll just use [Intercept Android APK Crypto Operations](https://codeshare.frida.re/@fadeevab/intercept-android-apk-crypto-operations/) frida script from codeshare to monitor encryption operations. I'll spawn the app with the script, enter any text and press `ENCRYPT` and watch as the script logs all the info about the encryption process that just happened. It gives you information about the Algorithm, the Secret Key, and also the plaintext.
 
 ![35](/assets/images/Android/Allsafe/35.png)
 
@@ -232,15 +232,15 @@ You can also use [this script](https://github.com/Ch0pin/medusa/blob/master/modu
 ## 13. Insecure Service
 ![36](/assets/images/Android/Allsafe/36.jpg){: width="400" height="550"}
 
-In this challenge the app has the `RECOED_AUDIO` permission. If you inspect the code you'll notice that once you click `START AUDIO RECORDER SERVICE` the app starts the service from `infosecadventures.allsafe.challenges.RecorderService`. 
+In this challenge, the app has the `RECOED_AUDIO` permission. If you inspect the code you'll notice that once you click `START AUDIO RECORDER SERVICE` the app starts the service from `infosecadventures.allsafe.challenges.RecorderService`. 
 
 ![37](/assets/images/Android/Allsafe/37.png)
 
-Inside `RecorderService` You'll see that is is configuring the android media recorder to recored sounds for only a couple of seconds then saves the recored in `mp3` format inside the `Download` directory in the `sdcard` (`/sdcard/Download`)
+Inside `RecorderService` You'll see that it is configuring the android media recorder to record sounds for only a couple of seconds and then saves the recored in `mp3` format inside the `Download` directory in the `sdcard` (`/sdcard/Download`)
 
 ![38](/assets/images/Android/Allsafe/38.png)
 
-Finally, from `AndroidManifest.xml` you'll find that `infosecadventures.allsafe.challenges.RecorderService` is exported so, we can directly call it to recored audio without the need to open the application.
+Finally, from `AndroidManifest.xml` you'll find that `infosecadventures.allsafe.challenges.RecorderService` is exported so, we can directly call it to record audio without the need to open the application.
 
 ![39](/assets/images/Android/Allsafe/39.png)
 
@@ -257,7 +257,7 @@ And you'll see that the phone indeed started recording voice and saved it to its
 ## 14. Object Serialization
 ![42](/assets/images/Android/Allsafe/42.jpg){: width="400" height="550"}
 
-For challenge No. 14, there seems to be a insecure data storage issue combined with insecure deserialization that must be exploited to give us privileges to use the `LOAD USER DATA` function.
+For challenge No. 14, there seems to be an insecure data storage issue combined with insecure deserialization that must be exploited to give us privileges to use the `LOAD USER DATA` function.
 
 Inside the code, there is a `User` object defined that takes a username, a password, and a default role of `ROLE_AUTHOR`. 
 
@@ -267,11 +267,11 @@ Once you type a user and a password in the app and click `SAVE USER DATA` it use
 
 ![43](/assets/images/Android/Allsafe/43.png)
 
-Finally, when you click `LOAD USER DATA` it deseralize the `User` object and checks if the role is set to `ROLE_EDITOR` or not. 
+Finally, when you click `LOAD USER DATA` it deserializes the `User` object and checks if the role is set to `ROLE_EDITOR` or not. 
 
 ![44](/assets/images/Android/Allsafe/44.png)
 
-The app doesn't check for any thing else and doesn't check the integrity of the serialized object so we can just modify the stored serialized object and replace it with the original one.
+The app doesn't check for anything else and doesn't check the integrity of the serialized object so we can just modify the stored serialized object and replace it with the original one.
 
 Normally I'd use [SerialTweaker](https://github.com/redtimmy/SerialTweaker){:target="_blank"} from redtimmy but for this small object, I can just use a basic Hex editor to do the job.
 
