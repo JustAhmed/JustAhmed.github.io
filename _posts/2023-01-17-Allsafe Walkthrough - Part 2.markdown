@@ -5,6 +5,8 @@ classes: wide
 categories: Android
 toc: true
 ---
+## Introduction
+[Allsafe](https://github.com/t0thkr1s/allsafe){:target="_blank"} is just another intentionally vulnerable Android application. The app is built with kotlin and contains many vulnerabilities with a nice difficulty curve. The main reason I'm writing a blog about this one is because it contains some nice Android challenges and there are no public writeups for the app till now.
 
 ## 15. Insecure Providers
 ![48](/assets/images/Android/Allsafe/48.jpg){: width="400" height="500"}
