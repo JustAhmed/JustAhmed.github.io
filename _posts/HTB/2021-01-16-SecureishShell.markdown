@@ -3,7 +3,6 @@ layout: single
 title:  "SecureishShell – 0xL4ugh CTF"
 excerpt: "SecureishShell is a bit different to write about, since I built it. My goal is to introduce something that i rarely see in challenges, which is Keymap walking passwords..."
 classes: wide
-gvt: of0LcSklyF8S5vFI5P_r8_OkmpfZ6SX5QuEQbLRDS7g
 ---
 ![1](/assets/images/SecureishShell/1.jpg)
 
