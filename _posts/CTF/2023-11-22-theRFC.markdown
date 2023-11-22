@@ -1,0 +1,71 @@
+---
+layout: single
+title:  "theRFC - CyCTF2023 Finals"
+classes: wide
+excerpt: "Cereal is the single most amazing box I've done on hack the box. It starts by finding an ASP.NET Core source code of the application running on port 443, reviewing the code..."
+categories: CTF
+---
+
+## Introduction
+theRFC is very nice web challenge in CyCTF 2023 finals. The web application is written in flask and has a very obvious host header injection vulnerability that you need to convert to Server-Side Template Injection.
+
+## Application Analysis
+Starting by looking into the source code you'll notice that it is a single page app. Looking at `line 12`{:style="color:orange"}, you'll notice that the only place that could accept user-input is the `Host`{:style="color:orange"} header. On `line 41`{:style="color:orange"} the app uses `template.render()`{:style="color:orange"} to render the response back to you which shows a very obvious SSTI vulnerability, if you can manage to bypass the simple filter on `line 7`{:style="color:orange"}, but is a bit tricky because the injection point is the Host header
+
+![0](/assets/images/rfc/2.png){: width="700px" }
+
+If you tried to directly inject a simple SSTI payload into the Host header, It'll fail with a `400 Bad Request`{:style="color:orange"} response but, that's normal because according to RFC 2616, you can't use characters like `{` and `}` in the Host header.
+
+![1](/assets/images/rfc/3.png){: width="700px" }
+
+
+The vulnerability here arises from the fact that the application is using `cherrypy v18.8.0`{:style="color:orange"} to parse the Host header. `cherrypy`{:style="color:orange"} decodes headers following [RFC 2047](https://www.rfc-editor.org/rfc/rfc2047) and lucky for us, the application is using that exact same version to parse and decode the Host header
+
+    https://github.com/cherrypy/cherrypy/blob/v18.8.0/cherrypy/_cprequest.py#L727
+    https://github.com/cherrypy/cherrypy/blob/v18.8.0/cherrypy/lib/httputil.py#L251
+
+![2](/assets/images/rfc/4.png){: width="700px" }
+
+Accodring to `RFC 2047`{:style="color:orange"}, you can use a much wider character set for the host header when encoded in a special way.
+
+![3](/assets/images/rfc/5.png){: width="700px" }
+
+![4](/assets/images/rfc/6.png){: width="700px" }
+
+so something like `=?iso-8859-1?q?this is some text?=`{:style="color:orange"} will work but if you started adding characters like `{`{:style="color:orange"}, It'll give you the 400 Response once again. 
+
+To Byass that, [RFC 2045](https://www.rfc-editor.org/rfc/rfc2045) has the answer as it stated that we can send our payload as hex characters but the format has to be an `=`{:style="color:orange"} followed by a 2 hex digits so, i'll have to repeat this process for every character I want to encode.
+
+![5](/assets/images/rfc/7.png){: width="700px" }
+
+The final step is to bypass the simple SSTI filter shown below:
+
+![6](/assets/images/rfc/8.png){: width="500px" }
+
+I've tested a lot of variations and this one from [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings/tree/master/Server%20Side%20Template%20Injection#exploit-the-ssti-by-calling-ospopenread) ended up working. 
+{% raw %}
+```py
+{{ self.__init__.__globals__.__builtins__.__import__('os').popen('id').read() }}
+```
+{% endraw %}
+
+Now, the final step is to bypass the `_`{:style="color:orange"}, `import`{:style="color:orange"}, and `os`{:style="color:orange"} and Chivato's [Jinja2 SSTI Research](https://hackmd.io/@Chivato/HyWsJ31dI#RCE-bypassing-as-much-as-I-possibly-can) is a great resource to do this. You can see that characters like a `_`{:style="color:orange"} can be bypassed by hex-encoding it. It turns out that the same works for `import`{:style="color:orange"} and `os`{:style="color:orange"}
+
+![7](/assets/images/rfc/chiv.png){: width="700px" }
+
+So, the final payload I end up with is 
+
+{% raw %}
+```py
+{{self['\x5f\x5finit\x5f\x5f']['\x5f\x5fglobals\x5f\x5f']['\x5f\x5fbuiltins\x5f\x5f']['\x5f\x5f\x69\x6D\x70\x6F\x72\x74\x5f\x5f']('\x6f\x73')['popen']('cat /flag.txt')['read']()}}
+```
+{% endraw %}
+
+* Where:
+    - every `_`{:style="color:orange"} is encoded to `\x5f`{:style="color:orange"}
+    - `__import__`{:style="color:orange"} is encoded to `\x5f\x5f\x69\x6D\x70\x6F\x72\x74\x5f\x5f`{:style="color:orange"}
+    - `os`{:style="color:orange"} is encoded to `\x6f\x73`{:style="color:orange"}
+
+I then hex-encoded that entire payload and added a `=` between every 2 hex digits and I got the flag.
+
+![7](/assets/images/rfc/9.png){: width="900px" }
