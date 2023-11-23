@@ -2,19 +2,19 @@
 layout: single
 title:  "theRFC - CyCTF2023 Finals"
 classes: wide
-excerpt: "Cereal is the single most amazing box I've done on hack the box. It starts by finding an ASP.NET Core source code of the application running on port 443, reviewing the code..."
+excerpt: "theRFC is very nice web challenge in CyCTF 2023 finals. The web application is written in flask and has a very obvious..."
 categories: CTF
 ---
 
 ## Introduction
-theRFC is very nice web challenge in CyCTF 2023 finals. The web application is written in flask and has a very obvious host header injection vulnerability that you need to convert to Server-Side Template Injection.
+theRFC is a very nice web challenge in CyCTF 2023 finals. The web application is written in flask and has a very obvious host header injection vulnerability that you need to convert to Server-Side Template Injection.
 
 ## Application Analysis
 Starting by looking into the source code you'll notice that it is a single page app. Looking at `line 12`{:style="color:orange"}, you'll notice that the only place that could accept user-input is the `Host`{:style="color:orange"} header. On `line 41`{:style="color:orange"} the app uses `template.render()`{:style="color:orange"} to render the response back to you which shows a very obvious SSTI vulnerability, if you can manage to bypass the simple filter on `line 7`{:style="color:orange"}, but is a bit tricky because the injection point is the Host header
 
 ![0](/assets/images/rfc/2.png){: width="700px" }
 
-If you tried to directly inject a simple SSTI payload into the Host header, It'll fail with a `400 Bad Request`{:style="color:orange"} response but, that's normal because according to RFC 2616, you can't use characters like `{` and `}` in the Host header.
+If you tried to directly inject a simple SSTI payload into the Host header, It'll fail with a `400 Bad Request`{:style="color:orange"} response but, that's normal because according to `RFC 2616`, you can't use characters like `{` and `}` in the Host header.
 
 ![1](/assets/images/rfc/3.png){: width="700px" }
 
@@ -34,7 +34,7 @@ Accodring to `RFC 2047`{:style="color:orange"}, you can use a much wider charact
 
 so something like `=?iso-8859-1?q?this is some text?=`{:style="color:orange"} will work but if you started adding characters like `{`{:style="color:orange"}, It'll give you the 400 Response once again. 
 
-To Byass that, [RFC 2045](https://www.rfc-editor.org/rfc/rfc2045) has the answer as it stated that we can send our payload as hex characters but the format has to be an `=`{:style="color:orange"} followed by a 2 hex digits so, i'll have to repeat this process for every character I want to encode.
+To Byass that, [RFC 2045](https://www.rfc-editor.org/rfc/rfc2045) has the answer as it states that you can send your payload as hex characters but the format has to be an `=`{:style="color:orange"} followed by a 2 hex digits so, i'll have to repeat this process for every character I want to encode.
 
 ![5](/assets/images/rfc/7.png){: width="700px" }
 
