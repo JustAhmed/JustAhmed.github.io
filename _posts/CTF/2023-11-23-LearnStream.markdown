@@ -179,7 +179,7 @@ Let's first start with the quick ones and those are `Create a Course`{:style="co
 
 and the `Get Video by Filename`{:style="color:orange"} (Download a video) simply takes a video name in `/LearnStream/videos/:filename`{:style="color:orange"} and downloads the video, if it exists.
 
-Now to the juicy stuff. Let's review the code responsible for uploading videos and see what we can find. You can find the code for it under `LearnStream/backend/app/resources/video.py`. 
+Now to the juicy stuff. Let's review the code responsible for uploading videos and see what we can find. You can find the code for it under `LearnStream/backend/app/resources/video.py`{:style="color:orange"}. 
 
 The code starts by checking if you are an `instructor`{:style="color:orange"} or not. If you are then It'll check to see if you provided a valid `course id`{:style="color:orange"} that already exists or not. 
 
@@ -189,13 +189,13 @@ Once all that is verified, the code starts by generating a random UUID as the vi
 
 ![20](/assets/images/learnstream/20.png){: width="800px" }
 
-The `download_video`{:style="color:orange"} function starts by sending a `HEAD`{:style="color:orange"} request to the URL and then saves the `Content-Length`respectively and `Content-Type`{:style="color:orange"} response headers to check the video size and the MIME type respectively. 
+The `download_video`{:style="color:orange"} function starts by sending a `HEAD`{:style="color:orange"} request to the URL and then saves the `Content-Length`{:style="color:orange"} and `Content-Type`{:style="color:orange"} response headers to check the video size and the MIME type respectively. 
 
 ![21](/assets/images/learnstream/21.png){: width="800px" }
 
 It also on `line 24`{:style="color:orange"} and `25`{:style="color:orange"} sets the maximum video size to `10 MBs`{:style="color:orange"} and the chunk size to `1 MB`{:style="color:orange"}. then it checks if the URL you provided points to a file that is a valid `MP4`{:style="color:orange"} video with size less than `10 MBs`{:style="color:orange"} or not. 
 
-If that check is ok, it calls `check_magic_bytes`{:style="color:orange"} which is a function that simply checks if the first 4 bytes of the file are `\x00\x00\x00\x18` which are the magic bytes of a valid MP4 video.
+If that check is ok, it calls `check_magic_bytes`{:style="color:orange"} which is a function that simply checks if the first 4 bytes of the file are `\x00\x00\x00\x18`{:style="color:orange"} which are the magic bytes of a valid MP4 video.
 
 ![22](/assets/images/learnstream/22.png){: width="600px" }
 
@@ -206,7 +206,8 @@ If the pass that check and indeed submitted an actual video (or just a file that
 ![24](/assets/images/learnstream/24.png){: width="800px" }
 
 
-> **Note:** The web server hosting the "video" file has understand the `Range`{:style="color:orange"} header and to have support for `partial-content`{:style="color:orange"}
+> **Note:** The web server hosting the "video" file has to understand the `Range`{:style="color:orange"} header and to have support for `partial-content`{:style="color:orange"}
+
 ---
 
 After understanding how the upload works, my teammate [Mohamed Serwah](https://twitter.com/serWazito0) pointed out that it is vulnerable and shared with me [this medium blog](https://dphoeniixx.medium.com/vimeo-upload-function-ssrf-7466d8630437) describing a similar behavior and how to exploit it. 
